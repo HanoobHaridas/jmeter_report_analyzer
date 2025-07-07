@@ -1,0 +1,200 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - '*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- checkout: self
+  fetchDepth: 0
+  persistCredentials: true
+
+- bash: |
+    python -m pip install openai
+  displayName: 'Install dependencies'
+
+- bash: |
+    # Clean up branch names
+    TARGET_BRANCH=$(echo "$(System.PullRequest.TargetBranch)" | sed 's/refs\/heads\///')
+    SOURCE_BRANCH=$(echo "$(System.PullRequest.SourceBranch)" | sed 's/refs\/heads\///')
+
+    analyze_csharp_file() {
+      local file=$1
+      echo "Analyzing $file..."
+      
+      # Store full file path
+      local full_file_path="$file"
+      
+      {
+        echo "## Changes in \`$file\`"
+        echo
+        echo "### Code Block Changes"
+        echo "The following code blocks were modified:"
+        echo "\`\`\`diff"
+        
+        # Show file header in diff format
+        echo "--- a/$full_file_path"
+        echo "+++ b/$full_file_path"
+        echo
+        
+        # Get the diff with context and line numbers
+        git diff -U3 --minimal "origin/$TARGET_BRANCH" "origin/$SOURCE_BRANCH" -- "$file" | \
+        awk '
+        # Print diff headers (@@)
+        /^@@/ {
+          print $0
+          next
+        }
+        # Print unchanged context lines
+        /^[[:space:]]/ {
+          print $0
+          next
+        }
+        # Print removed lines
+        /^-/ {
+          print $0
+          next
+        }
+        # Print added lines
+        /^+/ {
+          print $0
+          next
+        }
+        '
+        
+        echo "\`\`\`"
+        echo
+        
+        echo "### Change Analysis"
+        echo
+        
+        # Extract changes with their line numbers
+        local changes=$(git diff -U0 "origin/$TARGET_BRANCH" "origin/$SOURCE_BRANCH" -- "$file" | grep -E "^@@|^[-+][^-+]" | awk '
+        /^@@/ {
+          match($0, /@@[[:space:]]-([0-9]+)(,[0-9]+)?[[:space:]]\+([0-9]+)(,[0-9]+)?[[:space:]]@@/, arr)
+          old_line = arr[1]
+          new_line = arr[3]
+          next
+        }
+        /^-/ {
+          printf "Removed line %d: %s\n", old_line++, substr($0, 2)
+        }
+        /^\+/ {
+          printf "Added line %d: %s\n", new_line++, substr($0, 2)
+        }
+        ')
+        
+        echo "**Specific Changes:**"
+        echo "\`\`\`"
+        echo "$changes"
+        echo "\`\`\`"
+        echo
+        
+        echo "### Impact Analysis"
+        echo
+        
+        # Get context of changes
+        echo "**Change Context:**"
+        git diff -U3 "origin/$TARGET_BRANCH" "origin/$SOURCE_BRANCH" -- "$file" | \
+        awk '
+        /^@@/ {
+          if (length(context) > 0) {
+            printf "\nIn block %s:\n%s\n", header, context
+          }
+          header = $0
+          context = ""
+          next
+        }
+        /^[ +-]/ {
+          context = context $0 "\n"
+        }
+        END {
+          if (length(context) > 0) {
+            printf "\nIn block %s:\n%s\n", header, context
+          }
+        }' | while IFS= read -r line; do
+          if [[ $line =~ "@@" ]]; then
+            echo "**Change Block:**"
+          else
+            echo "$line"
+          fi
+        done
+        
+      } >> impact_analysis.md
+    }
+    
+    # Start impact analysis report
+    echo "# Code Changes Impact Analysis" > impact_analysis.md
+    echo >> impact_analysis.md
+    
+    # Process each modified file
+    git diff --name-status "origin/$TARGET_BRANCH" "origin/$SOURCE_BRANCH" | while read -r line; do
+      status=$(echo "$line" | cut -f1)
+      file=$(echo "$line" | cut -f2)
+      
+      if [[ $file == *.cs ]] && [[ $status != "D" ]]; then
+        analyze_csharp_file "$file"
+      fi
+    done
+    
+    mv impact_analysis.md "$(Build.ArtifactStagingDirectory)/"
+  displayName: 'Generate Impact Analysis'
+
+- task: PythonScript@0
+  inputs:
+    scriptSource: 'filePath'
+    scriptPath: './scripts/generate_test_cases.py'
+    arguments: '$(Build.ArtifactStagingDirectory)/impact_analysis.md $(Build.ArtifactStagingDirectory)/test_cases.md'
+  env:
+    OPENAI_API_KEY: $(OPENAI_API_KEY)
+    OPENAI_API_ENDPOINT: $(OPENAI_API_ENDPOINT)
+    OPENAI_DEPLOYMENT_NAME: $(OPENAI_DEPLOYMENT_NAME)
+    OPENAI_API_VERSION: $(OPENAI_API_VERSION)
+
+  displayName: 'Generate Test Cases'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathToPublish: '$(Build.ArtifactStagingDirectory)/impact_analysis.md'
+    artifactName: 'change_analysis'
+    publishLocation: 'Container'
+  displayName: 'Publish Analysis Report'
+
+- bash: |
+    # Post impact analysis comment
+    IMPACT_CONTENT=$(cat "$(Build.ArtifactStagingDirectory)/impact_analysis.md" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+    
+    curl -X POST \
+      "$(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $(System.AccessToken)" \
+      -d "{
+        \"comments\": [{
+          \"parentCommentId\": 0,
+          \"content\": \"$IMPACT_CONTENT\",
+          \"commentType\": 1
+        }]
+      }"
+  displayName: 'Post Impact Analysis Comment'
+
+- bash: |
+    # Post test cases comment
+    TEST_CASES_CONTENT=$(cat "$(Build.ArtifactStagingDirectory)/test_cases.md" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+    
+    curl -X POST \
+      "$(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $(System.AccessToken)" \
+      -d "{
+        \"comments\": [{
+          \"parentCommentId\": 0,
+          \"content\": \"# Generated Test Cases\\n\\n$TEST_CASES_CONTENT\",
+          \"commentType\": 1
+        }]
+      }"
+  displayName: 'Post Test Cases Comment'
