@@ -1,0 +1,11 @@
+--only-binary :all:
+streamlit
+pandas
+numpy
+beautifulsoup4
+lxml
+openpyxl
+tabulate
+html5lib
+setuptools
+wheel
