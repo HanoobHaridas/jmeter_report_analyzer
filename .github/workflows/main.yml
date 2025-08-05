@@ -32,3 +32,24 @@ jobs:
           ref: main                                # ✅ Branch to checkout
           #token: ${{ secrets.GITHUB_TOKEN }}       # ✅ Token to access private repo
           path: cloudimpactian                      # ✅ Target directory to clone into
+ # Step 5: Set up Python 3.10
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+ # Step 6: Install dependencies and activate venv
+      - name: Install dependencies and activate venv
+        run: |
+          cd cloudimpactian
+          python3 -m venv venv
+          source venv/bin/activate
+          python3 -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          
+          # Run FastAPI server in background
+          nohup uvicorn app.main:app --reload &
+
+          # Wait 60 seconds to keep the server alive
+          echo "Holding pipeline for 60 seconds..."
+          sleep 60
