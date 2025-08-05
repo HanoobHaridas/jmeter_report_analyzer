@@ -23,3 +23,12 @@ jobs:
         with:
           name: dev-branch-zip
           path: dev_source.zip
+          
+  # Step 2: Checkout another GitHub repo
+      - name: Checkout another repository
+        uses: actions/checkout@v3
+        with:
+          repository: https://github.com/HanoobHaridas/impactia.git       # ✅ Specify repo
+          ref: main                                # ✅ Branch to checkout
+          #token: ${{ secrets.GITHUB_TOKEN }}       # ✅ Token to access private repo
+          path: cloudimpactian                      # ✅ Target directory to clone into
