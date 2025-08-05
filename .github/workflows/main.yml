@@ -1,0 +1,25 @@
+name: Zip Dev Branch
+
+on:
+  workflow_dispatch:  # You can trigger this manually
+
+jobs:
+  zip-dev:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout dev branch
+        uses: actions/checkout@v3
+        with:
+          ref: dev
+          fetch-depth: 0  # full history, useful for zipping everything
+
+      - name: Create zip file
+        run: |
+          zip -r dev_source.zip . -x ".git/*"
+
+      - name: Upload zip as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-branch-zip
+          path: dev_source.zip
